@@ -30,6 +30,7 @@ const TopBar = ({
   onSharpnessChange,
   saturationValue,
   onSaturationChange,
+  onApplyVideoEffects, // New prop for handling video effects application
 }) => {
   const navigation = useNavigation();
   const [isScrollBarVisible, setIsScrollBarVisible] = useState(false);
@@ -141,7 +142,7 @@ const TopBar = ({
     { name: 'thermometer-outline', text: 'degree', iconSet: 'Ionicons', adjustment: 'temperature' },
     { name: 'blur', text: 'Softness', iconSet: 'MaterialCommunityIcons', adjustment: 'softness' },
     { name: 'image-filter-center-focus', text: 'clarity', iconSet: 'MaterialCommunityIcons', adjustment: 'sharpness' },
-    { name: 'invert-colors', text: 'chroma', iconSet: 'MaterialIcons', adjustment: 'saturation' },
+    ...(isVideo ? [] : [{ name: 'invert-colors', text: 'Chroma', iconSet: 'MaterialIcons', adjustment: 'saturation' }]),
     { name: 'color-filter', text: 'Filters', iconSet: 'Ionicons' },
     { name: 'image-size-select-large', text: 'PIP', iconSet: 'MaterialCommunityIcons', onPress: onPIPPress },
     ...(isVideo ? [{ name: 'scissors', text: 'Trim', iconSet: 'FontAwesome', onPress: () => handleIconPress({ name: 'scissors' }) }] : []),
@@ -339,6 +340,14 @@ return (
           {currentAdjustment && (
             <View style={styles.adjustBar}>
               {renderAdjustmentBar()}
+              {isVideo && (
+          <TouchableOpacity 
+            style={styles.applyFilterButton} 
+            onPress={onApplyVideoEffects}
+          >
+            <Text style={styles.applyFilterButtonText}>Apply Filter</Text>
+          </TouchableOpacity>
+        )}
             </View>
           )}
   {isFilterBarVisible && (

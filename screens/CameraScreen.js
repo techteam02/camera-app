@@ -254,7 +254,7 @@ const CameraScreen = ({ navigation }) => {
     });
   };
 
-  const startVideoRecording = async () => {
+const startVideoRecording = async () => {
   if (camera.current == null) {
     Alert.alert('Camera not initialized', 'Camera is not ready yet.');
     return;
@@ -275,12 +275,12 @@ const CameraScreen = ({ navigation }) => {
     const options = {
       flash: flash,
       fileType: 'mp4',
-      videoCodec: 'h264', // H.264 for high quality and wide compatibility
-      videoBitRate: 8000000, // 8 Mbps for high quality, but not excessive
-      fps: 30, // 30 fps for good quality and compatibility
+      videoCodec: 'h264',
+      videoBitRate: 8000000, // 8 Mbps for high quality
+      fps: 30, // Keep 30 fps for all modes
       videoStabilizationMode: 'standard',
       audioQuality: 'high',
-      audioBitRate: 128000, // 128 kbps for high-quality audio
+      audioBitRate: 128000,
       onRecordingFinished: (video) => {
         console.log('Video recording finished:', video);
         navigateToEditingScreen(video.path);
@@ -323,7 +323,10 @@ const stopVideoRecording = async () => {
 const navigateToEditingScreen = (videoPath) => {
   console.log('Navigating to EditingScreen with video path:', videoPath);
   navigation.navigate('EditingScreen', { 
-    media: { uri: videoPath, type: 'video' }
+    media: { 
+      uri: videoPath, 
+      type: isSlowMotionMode ? 'slowMotionVideo' : 'video'
+    }
   });
 };
 
