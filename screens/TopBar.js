@@ -170,7 +170,7 @@ const TopBar = ({
       case 'brightness':
         return (
           <View style={styles.adjustmentSlider}>
-            <Text style={styles.adjustText}>Brightness: {brightnessValue.toFixed(2)}</Text>
+            <Text style={styles.adjustText}>light: {brightnessValue.toFixed(2)}</Text>
             <Slider
               style={styles.slider}
               minimumValue={-1.5}
@@ -187,7 +187,7 @@ const TopBar = ({
       case 'temperature':
         return (
           <View style={styles.adjustmentSlider}>
-            <Text style={styles.adjustText}>Temperature: {temperatureValue.toFixed(2)}</Text>
+            <Text style={styles.adjustText}>degree: {temperatureValue.toFixed(2)}</Text>
             <Slider
               style={styles.slider}
               minimumValue={-0.5}
@@ -221,7 +221,7 @@ const TopBar = ({
       case 'sharpness':
         return (
           <View style={styles.adjustmentSlider}>
-            <Text style={styles.adjustText}>Sharpness: {sharpnessValue.toFixed(2)}</Text>
+            <Text style={styles.adjustText}>clarity: {sharpnessValue.toFixed(2)}</Text>
             <Slider
               style={styles.slider}
               minimumValue={0}
@@ -238,7 +238,7 @@ const TopBar = ({
       case 'saturation':
         return (
           <View style={styles.adjustmentSlider}>
-            <Text style={styles.adjustText}>Saturation: {saturationValue.toFixed(2)}</Text>
+            <Text style={styles.adjustText}>chroma: {saturationValue.toFixed(2)}</Text>
             <Slider
               style={styles.slider}
               minimumValue={0}

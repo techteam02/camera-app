@@ -502,8 +502,11 @@ const handleBrushPress = async () => {
     ];
 
     navigation.navigate('DrawingScreen', {
-      originalMedia: currentMedia,
-      existingPaths: drawnPaths,
+ originalMedia: {
+    ...currentMedia,
+    croppedUri: croppedImage?.uri // Add the cropped image URI if it exists
+  },
+        existingPaths: drawnPaths,
       overlayElements: overlayElements,
       mediaType: isVideo ? 'video' : 'image',
       adjustments: {

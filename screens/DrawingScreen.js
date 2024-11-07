@@ -16,33 +16,52 @@ const COLORS = [
 ];
 
 export default function DrawingScreen() {
-  const [paths, setPaths] = useState([]);
+   const [paths, setPaths] = useState([]);
   const [currentPath, setCurrentPath] = useState(null);
   const [tool, setTool] = useState('draw');
   const [originalMedia, setOriginalMedia] = useState(null);
+  const [croppedImage, setCroppedImage] = useState(null);
   const [strokeColor, setStrokeColor] = useState('black');
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [eraseRadius, setEraseRadius] = useState(20);
-    const [overlayElements, setOverlayElements] = useState([]);
+  const [overlayElements, setOverlayElements] = useState([]);
 
   const navigation = useNavigation();
   const route = useRoute();
   const svgRef = useRef(null);
 
-useEffect(() => {
+ useEffect(() => {
     if (route.params?.originalMedia) {
       setOriginalMedia(route.params.originalMedia);
-      Image.getSize(route.params.originalMedia.uri, (width, height) => {
-        const screenWidth = Dimensions.get('window').width;
-        const screenHeight = Dimensions.get('window').height;
-        const scaleFactor = Math.min(screenWidth / width, screenHeight / height);
-        setImageSize({
-          width: width * scaleFactor,
-          height: height * scaleFactor
+      
+      // Handle cropped image if it exists
+      if (route.params.originalMedia.croppedUri) {
+        setCroppedImage({ uri: route.params.originalMedia.croppedUri });
+        // Get dimensions for cropped image
+        Image.getSize(route.params.originalMedia.croppedUri, (width, height) => {
+          const screenWidth = Dimensions.get('window').width;
+          const screenHeight = Dimensions.get('window').height;
+          const scaleFactor = Math.min(screenWidth / width, screenHeight / height);
+          setImageSize({
+            width: width * scaleFactor,
+            height: height * scaleFactor
+          });
         });
-      });
+      } else {
+        // Handle original image
+        Image.getSize(route.params.originalMedia.uri, (width, height) => {
+          const screenWidth = Dimensions.get('window').width;
+          const screenHeight = Dimensions.get('window').height;
+          const scaleFactor = Math.min(screenWidth / width, screenHeight / height);
+          setImageSize({
+            width: width * scaleFactor,
+            height: height * scaleFactor
+          });
+        });
+      }
     }
+
     if (route.params?.existingPaths) {
       setPaths(route.params.existingPaths);
     }
@@ -280,16 +299,13 @@ useEffect(() => {
       </View>
       
       <View style={styles.canvasContainer}>
-        {originalMedia && (
-          <Image
-            source={{ uri: originalMedia.uri }}
-            style={[
-              StyleSheet.absoluteFillObject,
-              { width: imageSize.width, height: imageSize.height, }
-            ]}
-            resizeMode="contain"
-          />
-        )}
+{(croppedImage || originalMedia) && (
+  <Image
+    source={{ uri: croppedImage ? croppedImage.uri : originalMedia.uri }}
+    style={[StyleSheet.absoluteFillObject, { width: imageSize.width, height: imageSize.height }]}
+    resizeMode="contain"
+  />
+)}
         <Svg
           style={[
             StyleSheet.absoluteFillObject,
