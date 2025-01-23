@@ -7,6 +7,8 @@ import Icon from 'react-native-vector-icons/Ionicons';
 import Icon1 from 'react-native-vector-icons/FontAwesome5';
 import Icon2 from 'react-native-vector-icons/MaterialIcons';
 import Slider from '@react-native-community/slider';
+import Video from 'react-native-video';
+
 
 const COLORS = [
   'black', 'white', 'red', 'green', 'blue', 'yellow', 'purple', 'orange', 'pink', 'brown', 'gray',
@@ -24,8 +26,10 @@ export default function DrawingScreen() {
   const [strokeWidth, setStrokeWidth] = useState(4);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [eraseRadius, setEraseRadius] = useState(20);
-    const [overlayElements, setOverlayElements] = useState([]);
-
+  const [overlayElements, setOverlayElements] = useState([]);
+  const [videoUri, setVideoUri] = useState(null);
+  const [videoLoaded, setVideoLoaded] = useState(false);
+  const videoRef = useRef(null);
   const navigation = useNavigation();
   const route = useRoute();
   const svgRef = useRef(null);
@@ -49,6 +53,23 @@ useEffect(() => {
     if (route.params?.overlayElements) {
       setOverlayElements(route.params.overlayElements);
     }
+     if (route.params.originalMedia.type === 'video') {
+        // Use edited video URI if available, otherwise use original
+        const videoSource = route.params.editedVideoUri || route.params.originalMedia.uri;
+        setVideoUri(videoSource);
+        console.log('Video source set:', videoSource);
+      } else {
+        // Handle image dimensions as before
+        Image.getSize(route.params.originalMedia.uri, (width, height) => {
+          const screenWidth = Dimensions.get('window').width;
+          const screenHeight = Dimensions.get('window').height;
+          const scaleFactor = Math.min(screenWidth / width, screenHeight / height);
+          setImageSize({
+            width: width * scaleFactor,
+            height: height * scaleFactor
+          });
+        });
+      }
   }, [route.params]);
 
   const panResponder = PanResponder.create({
@@ -253,6 +274,59 @@ useEffect(() => {
     ],
     ...(item.style || {}),
   });
+const handleVideoLoad = (metadata) => {
+    console.log('Video loaded with metadata:', metadata);
+    const { width, height } = metadata.naturalSize;
+    const screenWidth = Dimensions.get('window').width;
+    const screenHeight = Dimensions.get('window').height;
+    const scaleFactor = Math.min(screenWidth / width, screenHeight / height);
+    
+    setImageSize({
+      width: width * scaleFactor,
+      height: height * scaleFactor
+    });
+    setVideoLoaded(true);
+  };
+
+  const handleVideoError = (error) => {
+    console.error('Video loading error:', error);
+    Alert.alert(
+      'Error',
+      'Failed to load video. Please try again.',
+      [{ text: 'OK', onPress: () => navigation.goBack() }]
+    );
+  };
+
+  const renderMedia = () => {
+    if (!originalMedia) return null;
+
+    if (originalMedia.type === 'video') {
+      return (
+        <Video
+          ref={videoRef}
+          source={{ uri: videoUri }}
+          style={[
+            styles.media,
+            videoLoaded ? { width: imageSize.width, height: imageSize.height } : styles.hidden
+          ]}
+          resizeMode="contain"
+          repeat={true}
+          paused={false}
+          muted={true}
+          onLoad={handleVideoLoad}
+          onError={handleVideoError}
+        />
+      );
+    }
+
+    return (
+      <Image
+        source={{ uri: originalMedia.uri }}
+        style={[styles.media, { width: imageSize.width, height: imageSize.height }]}
+        resizeMode="contain"
+      />
+    );
+  };
   return (
     <View style={styles.container}>
       <View style={styles.topBar}>
@@ -280,16 +354,8 @@ useEffect(() => {
       </View>
       
       <View style={styles.canvasContainer}>
-        {originalMedia && (
-          <Image
-            source={{ uri: originalMedia.uri }}
-            style={[
-              StyleSheet.absoluteFillObject,
-              { width: imageSize.width, height: imageSize.height, }
-            ]}
-            resizeMode="contain"
-          />
-        )}
+        {originalMedia && renderMedia()}
+
         <Svg
           style={[
             StyleSheet.absoluteFillObject,
@@ -458,4 +524,20 @@ const styles = StyleSheet.create({
     height: '100%',
     resizeMode: 'contain',
   },
+  media: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  
+  videoContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'black',
+  }
 });

@@ -521,6 +521,7 @@ useEffect(() => {
 
       navigation.navigate('DrawingScreen', {
         originalMedia: currentMedia,
+          editedVideoUri: editedVideoUri, // Add this line
         existingPaths: drawnPaths,
         overlayElements: overlayElements,
         mediaType: isVideo ? 'video' : 'image',
@@ -676,68 +677,275 @@ useEffect(() => {
     const newSpeed = speeds[nextIndex];
     setPlaybackSpeed(newSpeed);
   };
-  const saveMedia = async (isDraft = false) => {
-    try {
-      if (!currentMedia) {
-        throw new Error('No media to save');
-      }
+const saveMedia = async (isDraft = false) => {
+  try {
+    if (!currentMedia) {
+      throw new Error('No media to save');
+    }
 
-      const album = isDraft ? 'Drafts' : 'Camera';
+    setIsProcessing(true);
+    const album = isDraft ? 'Drafts' : 'Camera';
 
-      if (isVideo) {
-        // Generate a unique output file path
-        const outputPath = `${RNFS.CachesDirectoryPath}/processed_${Date.now()}.mp4`;
+    if (isVideo) {
+      // Create temporary directory structure
+      const tempDir = `${RNFS.CachesDirectoryPath}/videoProcessing_${Date.now()}`;
+      await RNFS.mkdir(tempDir);
+      const overlaysDir = `${tempDir}/overlays`;
+      const processedDir = `${tempDir}/processed`;
+      const audioDir = `${tempDir}/audio`;
+      await Promise.all([
+        RNFS.mkdir(overlaysDir),
+        RNFS.mkdir(processedDir),
+        RNFS.mkdir(audioDir)
+      ]);
 
-        // Start with a basic command
-        let command = `-i "${currentMedia.uri}" -c copy "${outputPath}"`;
+      try {
+        // Step 1: Extract frames from original video
+        console.log('Extracting frames...');
+        const framesCommand = `-i "${currentMedia.uri}" -vf fps=30 "${overlaysDir}/frame_%d.png"`;
+        const extractSession = await FFmpegKit.execute(framesCommand);
+        if (!ReturnCode.isSuccess(await extractSession.getReturnCode())) {
+          throw new Error('Failed to extract video frames');
+        }
 
-        // Enable FFmpeg logging
-        await FFmpegKitConfig.enableLogCallback((log) => {
-          console.log(log.getMessage());
-        });
+        // Get frame count and prepare for processing
+        const frames = await RNFS.readdir(overlaysDir);
+        const totalFrames = frames.length;
+        console.log(`Processing ${totalFrames} frames...`);
 
-        // Execute FFmpeg command
-        const session = await FFmpegKit.execute(command);
-        const returnCode = await session.getReturnCode();
-
-        if (returnCode.isValueSuccess()) {
-          // FFmpeg command was successful, save the processed video
-          const saveResult = await CameraRoll.save(`file://${outputPath}`, { 
-            type: 'video', 
-            album: album 
+        // Step 2: Process each frame with overlays
+        for (let i = 0; i < totalFrames; i++) {
+          const frameIndex = i + 1;
+          const frameUri = `${overlaysDir}/frame_${frameIndex}.png`;
+          const overlayUri = `${overlaysDir}/overlay_${frameIndex}.png`;
+          
+          // Create overlay content
+          await viewShotRef.current.capture({
+            format: 'png',
+            quality: 1,
+            result: 'file',
+            path: overlayUri,
+            width: wp('100%'),
+  height: hp('80%')
           });
 
-          // Clean up the temporary file
-          await RNFS.unlink(outputPath);
+          // Composite frame with overlay
+          const compositeCommand = [
+            `-i "${frameUri}"`, // Original frame
+            `-i "${overlayUri}"`, // Overlay with all elements
+            '-filter_complex "[0:v][1:v]overlay=0:0"',
+            ...(selectedFilter ? [
+              `,colorbalance=rs=${contrast}:gs=${contrast}:bs=${contrast}`,
+              `:rm=${brightness}:gm=${brightness}:bm=${brightness}`,
+              `:rh=${temperature}:gh=${temperature}:bh=${temperature}`,
+              `,unsharp=${sharpness}:5:0:3:3`,
+              `,eq=saturation=${saturation}`
+            ] : []),
+            `"${processedDir}/frame_${frameIndex}.png"`
+          ].join(' ');
 
-          Alert.alert('Success', `Video ${isDraft ? 'drafted' : 'saved'} successfully.`);
-        } else {
-          const logs = await session.getAllLogsAsString();
-          console.error('FFmpeg process failed with output:', logs);
-          throw new Error(`Failed to process video. Error: ${logs}`);
+          const compositeSession = await FFmpegKit.execute(compositeCommand);
+          if (!ReturnCode.isSuccess(await compositeSession.getReturnCode())) {
+            throw new Error(`Failed to composite frame ${frameIndex}`);
+          }
+
+          // Clean up temporary overlay
+          await RNFS.unlink(overlayUri);
         }
-      } else {
-        // For images, we can capture the entire view as it is
+
+        // Step 3: Handle audio processing
+        let audioInputs = [];
+        let audioFilters = [];
+        let audioMaps = [];
+
+        // Original video audio (if not muted)
+        if (!isMuted && !isAllMuted) {
+          audioInputs.push(`-i "${currentMedia.uri}"`);
+          audioMaps.push('-map 1:a');
+        }
+
+        // Background music
+        if (selectedMusic && !isAllMuted) {
+          const musicPath = `${audioDir}/background_music.mp3`;
+          await RNFS.copyFile(selectedMusic.uri, musicPath);
+          audioInputs.push(`-i "${musicPath}"`);
+          audioFilters.push(`[${audioInputs.length}:a]volume=0.5[music]`);
+          audioMaps.push('-map [music]');
+        }
+
+        // Voice recording
+        if (selectedRecording && !isAllMuted) {
+          const recordingPath = `${audioDir}/voice_recording.mp3`;
+          await RNFS.copyFile(selectedRecording.path, recordingPath);
+          audioInputs.push(`-i "${recordingPath}"`);
+          audioFilters.push(`[${audioInputs.length}:a]volume=1[voice]`);
+          audioMaps.push('-map [voice]');
+        }
+
+        // Step 4: Combine everything into final video
+        const outputPath = `${tempDir}/output.mp4`;
+        const combineCommand = [
+          `-framerate 30`,
+          `-i "${processedDir}/frame_%d.png"`,
+          ...audioInputs,
+          '-filter_complex',
+          `"${audioFilters.join(';')}"`,
+          '-map 0:v',
+          ...audioMaps,
+          ...(playbackSpeed !== 1 ? [`-filter:v "setpts=${1/playbackSpeed}*PTS"`] : []),
+          '-c:v libx264',
+          '-pix_fmt yuv420p',
+          '-preset ultrafast',
+          '-movflags +faststart',
+          `"${outputPath}"`
+        ].join(' ');
+
+        console.log('Combining final video...');
+        const combineSession = await FFmpegKit.execute(combineCommand);
+        if (!ReturnCode.isSuccess(await combineSession.getReturnCode())) {
+          throw new Error('Failed to combine final video');
+        }
+
+        // Save to camera roll
+        await CameraRoll.save(`file://${outputPath}`, {
+          type: 'video',
+          album: album
+        });
+
+        // If this is a draft, save additional metadata
+        if (isDraft) {
+          const draftData = {
+            uri: outputPath,
+            type: 'video',
+            editedAt: new Date().toISOString(),
+            filterIndex: FILTERS.findIndex(filter => filter === selectedFilter),
+            hashtags: selectedHashtags.map(hashtag => ({
+              ...hashtag,
+              panX: hashtag.pan.x._value,
+              panY: hashtag.pan.y._value,
+              scale: hashtag.scale._value,
+              rotate: hashtag.rotate._value,
+            })),
+            location: selectedLocation ? {
+              ...selectedLocation,
+              panX: selectedLocation.pan.x._value,
+              panY: selectedLocation.pan.y._value,
+              scale: selectedLocation.scale._value,
+              rotate: selectedLocation.rotate._value,
+            } : null,
+            friends: selectedFriends.map(friend => ({
+              ...friend,
+              panX: friend.pan.x._value,
+              panY: friend.pan.y._value,
+              scale: friend.scale._value,
+              rotate: friend.rotate._value,
+            })),
+            textElements: textElements.map(text => ({
+              ...text,
+              panX: text.pan.x._value,
+              panY: text.pan.y._value,
+              scale: text.scale._value,
+              rotate: text.rotate ? text.rotate._value : 0,
+              style: { ...text.style, transform: undefined }
+            })),
+            stickers: selectedStickers.map(sticker => ({
+              ...sticker,
+              panX: sticker.pan.x._value,
+              panY: sticker.pan.y._value,
+              scale: sticker.scale._value,
+              rotate: sticker.rotate._value,
+            })),
+            pipImage: pipImage ? {
+              ...pipImage,
+              panX: pipImage.pan.x._value,
+              panY: pipImage.pan.y._value,
+              scale: pipImage.scale._value,
+              rotate: pipImage.rotate._value,
+              size: pipSize,
+              backgroundColor: pipBackgroundColor,
+              opacity: pipOpacity,
+              rotation: pipRotation,
+              flipped: pipFlipped,
+            } : null,
+            adjustments: {
+              contrast,
+              brightness,
+              temperature,
+              softness,
+              sharpness,
+              saturation,
+            },
+            audio: {
+              playbackSpeed,
+              isMuted,
+              isAllMuted,
+              selectedMusic,
+              selectedRecording,
+            },
+            drawnContent,
+            drawnPaths,
+            drawingOffset,
+            drawingScale,
+          };
+
+          const existingDraftsJson = await AsyncStorage.getItem('draftedMedia');
+          const existingDrafts = existingDraftsJson ? JSON.parse(existingDraftsJson) : [];
+          const updatedDrafts = [draftData, ...existingDrafts];
+          await AsyncStorage.setItem('draftedMedia', JSON.stringify(updatedDrafts));
+        }
+
+        Alert.alert('Success', `Video ${isDraft ? 'drafted' : 'saved'} successfully`);
+      } finally {
+        // Clean up all temporary files
+        await RNFS.unlink(tempDir).catch(console.error);
+        setIsProcessing(false);
+      }
+    } else {
+      // Handle image saving
+      try {
+        // Create final image with all overlays and effects
         const imageUri = await viewShotRef.current.capture({
           format: 'png',
           quality: 1,
           result: 'tmpfile',
+          width: wp('100%'),
+  height: hp('80%')
         });
-        
-        const saveResult = await CameraRoll.save(imageUri, { 
-          type: 'photo', 
-          album: album 
+
+        // Apply any image-specific processing here if needed
+        await CameraRoll.save(imageUri, {
+          type: 'photo',
+          album: album
         });
-        
-        await RNFS.unlink(imageUri);
-        
+
+        // Save draft metadata if needed
+        if (isDraft) {
+          const draftData = {
+            uri: imageUri,
+            type: 'image',
+            editedAt: new Date().toISOString(),
+            // ... same metadata as video, but without audio-specific properties
+          };
+
+          const existingDraftsJson = await AsyncStorage.getItem('draftedMedia');
+          const existingDrafts = existingDraftsJson ? JSON.parse(existingDraftsJson) : [];
+          const updatedDrafts = [draftData, ...existingDrafts];
+          await AsyncStorage.setItem('draftedMedia', JSON.stringify(updatedDrafts));
+        }
+
+        await RNFS.unlink(imageUri).catch(console.error);
         Alert.alert('Success', `Image ${isDraft ? 'drafted' : 'saved'} successfully`);
+      } catch (error) {
+        throw new Error(`Failed to save image: ${error.message}`);
       }
-    } catch (error) {
-      console.error('Error saving media:', error);
-      Alert.alert('Error', `Failed to ${isDraft ? 'draft' : 'save'} media. ${error.message}`);
     }
-  };
+  } catch (error) {
+    console.error('Error saving media:', error);
+    Alert.alert('Error', `Failed to ${isDraft ? 'draft' : 'save'} media. ${error.message}`);
+  } finally {
+    setIsProcessing(false);
+  }
+};
   const calculateNewPosition = (existingItems) => {
     const padding = 10;
     const startX = padding;
@@ -1393,63 +1601,70 @@ useEffect(() => {
       </TouchableOpacity>
     </View>
   );
-  const applyVideoEffects = async () => {
-    if (!isVideo || !currentMedia) {
-      Alert.alert('Error', 'No video selected for editing');
-      return;
-    }
+ const applyVideoEffects = async () => {
+  if (!isVideo || !currentMedia) {
+    Alert.alert('Error', 'No video selected for editing');
+    return;
+  }
 
-    setIsProcessing(true);
-    let currentInputPath = currentMedia.uri;
-    let outputPath;
+  setIsProcessing(true);
+  let currentInputPath = currentMedia.uri;
+  let outputPath;
 
-    const applyEffect = async (filterString, effectName) => {
-      outputPath = `${RNFS.CachesDirectoryPath}/edited_video_${Date.now()}.mp4`;
-      const command = `-i "${currentInputPath}" -vf "${filterString}" -c:a copy "${outputPath}"`;
-      console.log(`Applying ${effectName} - Command:`, command);
-
-      try {
-        const session = await FFmpegKit.execute(command);
-        const returnCode = await session.getReturnCode();
-        const logs = await session.getLogs();
-
-        if (ReturnCode.isSuccess(returnCode)) {
-          console.log(`${effectName} applied successfully`);
-          if (currentInputPath !== currentMedia.uri) {
-            await RNFS.unlink(currentInputPath);
-          }
-          currentInputPath = outputPath;
-        } else {
-          throw new Error(`${effectName} application failed with return code: ${returnCode}\nLogs: ${logs.map(log => log.getMessage()).join('\n')}`);
-        }
-      } catch (error) {
-        throw new Error(`Error applying ${effectName}: ${error.message}`);
-      }
-    };
+  const applyEffect = async (filterString, effectName) => {
+    outputPath = `${RNFS.CachesDirectoryPath}/edited_video_${Date.now()}.mp4`;
+    const command = `-i "${currentInputPath}" -vf "${filterString}" -c:a copy "${outputPath}"`;
+    console.log(`Applying ${effectName} - Command:`, command);
 
     try {
-      // Apply brightness and saturation
-      const adjustedB = 1 + brightness * 0.2;
-      const adjustedS = 1 + brightness * 0.5;
-      await applyEffect(`colorchannelmixer=rr=${adjustedB}:gg=${adjustedB}:bb=${adjustedB},colorchannelmixer=rr=${adjustedS}:gg=${adjustedS}:bb=${adjustedS}`, 'Brightness and Saturation');
+      const session = await FFmpegKit.execute(command);
+      const returnCode = await session.getReturnCode();
+      const logs = await session.getLogs();
 
-      // Apply contrast
-      const blackPoint = Math.max(0, (2 - contrast) * 0.125);
-      const whitePoint = Math.min(1, 1 - (contrast - 1) * 0.125);
-      await applyEffect(`colorlevels=rimin=${blackPoint}:rimax=${whitePoint}:gimin=${blackPoint}:gimax=${whitePoint}:bimin=${blackPoint}:bimax=${whitePoint}`, 'Contrast');
-
-      // Apply temperature (reversed)
-      const adjustedTemp = 6500 - temperature * 4500;
-      await applyEffect(`colortemperature=temperature=${adjustedTemp}`, 'Temperature');
-
-      setEditedVideoUri(currentInputPath);
-      Alert.alert('Success', 'Video edited successfully!');
+      if (ReturnCode.isSuccess(returnCode)) {
+        console.log(`${effectName} applied successfully`);
+        if (currentInputPath !== currentMedia.uri) {
+          await RNFS.unlink(currentInputPath);
+        }
+        currentInputPath = outputPath;
+      } else {
+        throw new Error(`${effectName} application failed with return code: ${returnCode}\nLogs: ${logs.map(log => log.getMessage()).join('\n')}`);
+      }
     } catch (error) {
-      console.error('Error during video editing:', error);
-      Alert.alert('Error', `Failed to edit video: ${error.message}`);
-    } finally {
-      setIsProcessing(false);
+      throw new Error(`Error applying ${effectName}: ${error.message}`);
     }
+  };
+
+  try {
+    // Apply brightness and contrast
+    const adjustedBrightness = brightness * 0.2; // Scale brightness to a reasonable range
+    const adjustedContrast = contrast * 1.5; // Scale contrast to a reasonable range
+    await applyEffect(`eq=brightness=${adjustedBrightness}:contrast=${adjustedContrast}`, 'Brightness and Contrast');
+
+    // Apply saturation
+    const adjustedSaturation = saturation * 1.5; // Scale saturation to a reasonable range
+    await applyEffect(`eq=saturation=${adjustedSaturation}`, 'Saturation');
+
+    // Apply temperature (color balance)
+    const adjustedTemperature = temperature * 0.5; // Scale temperature to a reasonable range
+    await applyEffect(`colorbalance=rs=${adjustedTemperature}:gs=${adjustedTemperature}:bs=${adjustedTemperature}`, 'Temperature');
+
+    // Apply sharpness
+    const adjustedSharpness = sharpness * 0.5; // Scale sharpness to a reasonable range
+    await applyEffect(`unsharp=${adjustedSharpness}:5:0:3:3`, 'Sharpness');
+
+    // Apply softness (blur)
+    const adjustedSoftness = softness * 0.5; // Scale softness to a reasonable range
+    await applyEffect(`boxblur=${adjustedSoftness}`, 'Softness');
+
+    setEditedVideoUri(currentInputPath);
+    Alert.alert('Success', 'Video edited successfully!');
+  } catch (error) {
+    console.error('Error during video editing:', error);
+    Alert.alert('Error', `Failed to edit video: ${error.message}`);
+  } finally {
+    setIsProcessing(false);
+  }
   };
   return (
   <SafeAreaView style={styles.container} >
@@ -1540,13 +1755,9 @@ useEffect(() => {
           </TouchableOpacity>
         )}
     </View>
-    <ViewShot 
-     ref={viewShotRef}
-      options={{ format: "jpg", quality: 1 }}
-      style={styles.viewShot}
-    >
+
         <View 
-          style={styles.mediaContainer} 
+          style={styles.mediaOnlyContainer} 
           pointerEvents="box-none"   
           onTouchStart={(event) => { 
             closeAllMenus(); // Close all menus
@@ -1577,6 +1788,12 @@ useEffect(() => {
           }}
           onLayout={(event) => setMediaContainerLayout(event.nativeEvent.layout)}
         >
+            <ViewShot 
+            ref={viewShotRef}
+            options={{ format: "jpg", quality: 1,width: wp('100%'),
+            height: hp('50%') }}
+            style={styles.mediaViewShot}
+            >
         {currentMedia && (
           <View style={styles.mediaWrapper}>
             {isFromLayout ? (
@@ -1601,19 +1818,37 @@ useEffect(() => {
   />
                 </SelectedFilterComponent>
             ) : isVideo ? (
-        <View style={styles.videoContainer}>
-<Video
-  ref={videoRef}
-  source={{ uri: currentMedia.uri }}
-  style={styles.media}
-  resizeMode="contain"
-  repeat={true}
-  controls={true}
-  muted={isAllMuted || isMuted}
-  rate={currentMedia.type === 'slowMotionVideo' ? 0.25 : playbackSpeed}
-/>
-        </View>
-      ) : (
+  <View style={styles.videoContainer}>
+    <Video
+      ref={videoRef}
+      source={{ uri: editedVideoUri || currentMedia.uri }}
+      style={styles.media}
+      resizeMode="contain"
+      repeat={true}
+      controls={true}
+      muted={isAllMuted || isMuted}
+      rate={currentMedia.type === 'slowMotionVideo' ? 0.25 : playbackSpeed}
+    />
+    {drawnContent && (
+      <Image
+        source={{ uri: drawnContent }}
+        style={[
+          styles.drawnContentOverlay,
+          {
+            width: mediaContainerLayout ? mediaContainerLayout.width : '100%',
+            height: mediaContainerLayout ? mediaContainerLayout.height : '100%',
+            transform: [
+              { translateX: drawingOffset.x },
+              { translateY: drawingOffset.y },
+              { scale: drawingScale },
+            ],
+          }
+        ]}
+        resizeMode="contain"
+      />
+    )}
+  </View>
+) : (
               <View style={[styles.imageContainer]}>
                 {adjustmentsChanged ? (
                   <ColorMatrix
@@ -1879,8 +2114,9 @@ useEffect(() => {
           </Animated.View>
         );
       })}
+          </ViewShot>
     </View>
-    </ViewShot>
+
     <Modal
       visible={isFriendsListVisible}
       transparent={true}
@@ -2037,12 +2273,12 @@ const styles = StyleSheet.create({
   },
   mediaWrapper: {
     width: wp('100%'),
-    height: hp('93%'),
+    height: hp('50%'),
     overflow: 'hidden', // This ensures effects don't spill outside
   },
   mediaContainer: {
     width: wp('100%'),
-    height: hp('92%'),
+    height: hp('50%'),
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
@@ -2067,7 +2303,8 @@ const styles = StyleSheet.create({
   },
   media: {
     width: wp('100%'),    
-    height: hp('80%'),
+    height: hp('50%'),
+    resizeMode: 'contain',
     zIndex:2
   },
     pipContainerOuter: {
@@ -2192,7 +2429,7 @@ const styles = StyleSheet.create({
   },
   drawnContentOverlay: {
     position: 'absolute',
-    top: -50,
+    top: 0,
     left: 0,
     right: 0,
     bottom: 0,
@@ -2205,6 +2442,22 @@ const styles = StyleSheet.create({
     zIndex:10,
     fontWeight: 'bold',
     backgroundColor: '#fff'
+  },
+  mediaViewShot: {
+    width: wp('100%'),
+    height: hp('50%'),
+    position: 'absolute',
+    top: hp('20%'),
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingBottom: -300
+  },
+ mediaOnlyContainer: {
+    width: '100%',
+    height: '50%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'transparent'
   },
   colorPickerContainer: {
   flex: 1,

@@ -379,7 +379,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     backgroundColor: 'white',
-    zIndex: 2
+    zIndex: 2,
+    paddingTop: hp('10%')
   },
   scrollBar: {
     backgroundColor: 'white',
